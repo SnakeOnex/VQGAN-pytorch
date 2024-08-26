@@ -9,14 +9,21 @@ from discriminator import Discriminator
 from lpips import LPIPS
 from vqgan import VQGAN
 from utils import load_data, weights_init
+from vqgan_tame import VQModel as VQGAN_tame
 
 
 class TrainVQGAN:
     def __init__(self, args):
-        self.vqgan = VQGAN(args).to(device=args.device)
+        self.vqgan = VQGAN_tame(args).to(device=args.device)
         self.discriminator = Discriminator(args).to(device=args.device)
         self.discriminator.apply(weights_init)
         self.perceptual_loss = LPIPS().eval().to(device=args.device)
+
+        # print params count for debugging
+        params_count = sum(p.numel() for p in self.vqgan.parameters())
+        print(f"Number of parameters: {params_count/1e6:.2f}M")
+        # exit(0)
+
         self.opt_vq, self.opt_disc = self.configure_optimizers(args)
 
         self.prepare_training()
@@ -28,7 +35,7 @@ class TrainVQGAN:
         opt_vq = torch.optim.Adam(
             list(self.vqgan.encoder.parameters()) +
             list(self.vqgan.decoder.parameters()) +
-            list(self.vqgan.codebook.parameters()) +
+            list(self.vqgan.quantize.parameters()) +
             list(self.vqgan.quant_conv.parameters()) +
             list(self.vqgan.post_quant_conv.parameters()),
             lr=lr, eps=1e-08, betas=(args.beta1, args.beta2)
@@ -50,12 +57,13 @@ class TrainVQGAN:
             with tqdm(range(len(train_dataset))) as pbar:
                 for i, imgs in zip(pbar, train_dataset):
                     imgs = imgs.to(device=args.device)
-                    decoded_images, _, q_loss = self.vqgan(imgs)
+                    # decoded_images, _, q_loss = self.vqgan(imgs)
+                    decoded_images, _, _ = self.vqgan(imgs)
 
                     disc_real = self.discriminator(imgs)
                     disc_fake = self.discriminator(decoded_images)
 
-                    disc_factor = self.vqgan.adopt_weight(args.disc_factor, epoch*steps_per_epoch+i, threshold=args.disc_start)
+                    # disc_factor = self.vqgan.adopt_weight(args.disc_factor, epoch*steps_per_epoch+i, threshold=args.disc_start)
 
                     perceptual_loss = self.perceptual_loss(imgs, decoded_images)
                     rec_loss = torch.abs(imgs - decoded_images)
@@ -63,31 +71,32 @@ class TrainVQGAN:
                     perceptual_rec_loss = perceptual_rec_loss.mean()
                     g_loss = -torch.mean(disc_fake)
 
-                    λ = self.vqgan.calculate_lambda(perceptual_rec_loss, g_loss)
-                    vq_loss = perceptual_rec_loss + q_loss + disc_factor * λ * g_loss
+                    # λ = self.vqgan.calculate_lambda(perceptual_rec_loss, g_loss)
+                    # vq_loss = perceptual_rec_loss + q_loss + disc_factor * λ * g_loss
 
                     d_loss_real = torch.mean(F.relu(1. - disc_real))
                     d_loss_fake = torch.mean(F.relu(1. + disc_fake))
-                    gan_loss = disc_factor * 0.5*(d_loss_real + d_loss_fake)
+                    # gan_loss = disc_factor * 0.5*(d_loss_real + d_loss_fake)
 
                     self.opt_vq.zero_grad()
-                    vq_loss.backward(retain_graph=True)
+                    # vq_loss.backward(retain_graph=True)
 
                     self.opt_disc.zero_grad()
-                    gan_loss.backward()
+                    # gan_loss.backward()
 
                     self.opt_vq.step()
                     self.opt_disc.step()
 
                     if i % 10 == 0:
                         with torch.no_grad():
-                            real_fake_images = torch.cat((imgs[:4], decoded_images.add(1).mul(0.5)[:4]))
+                            # real_fake_images = torch.cat((imgs[:4], decoded_images.add(1).mul(0.5)[:4]))
+                            real_fake_images = torch.cat((imgs.add(1).mul(0.5)[:4], decoded_images.add(1).mul(0.5)[:4]))
                             vutils.save_image(real_fake_images, os.path.join("results", f"{epoch}_{i}.jpg"), nrow=4)
 
-                    pbar.set_postfix(
-                        VQ_Loss=np.round(vq_loss.cpu().detach().numpy().item(), 5),
-                        GAN_Loss=np.round(gan_loss.cpu().detach().numpy().item(), 3)
-                    )
+                    # pbar.set_postfix(
+                        # VQ_Loss=np.round(vq_loss.cpu().detach().numpy().item(), 5),
+                        # GAN_Loss=np.round(gan_loss.cpu().detach().numpy().item(), 3)
+                    # )
                     pbar.update(0)
                 torch.save(self.vqgan.state_dict(), os.path.join("checkpoints", f"vqgan_epoch_{epoch}.pt"))
 
@@ -102,7 +111,7 @@ if __name__ == '__main__':
     parser.add_argument('--dataset-path', type=str, default='/data', help='Path to data (default: /data)')
     parser.add_argument('--device', type=str, default="cuda", help='Which device the training is on')
     parser.add_argument('--batch-size', type=int, default=6, help='Input batch size for training (default: 6)')
-    parser.add_argument('--epochs', type=int, default=100, help='Number of epochs to train (default: 50)')
+    parser.add_argument('--epochs', type=int, default=500, help='Number of epochs to train (default: 50)')
     parser.add_argument('--learning-rate', type=float, default=2.25e-05, help='Learning rate (default: 0.0002)')
     parser.add_argument('--beta1', type=float, default=0.5, help='Adam beta param (default: 0.0)')
     parser.add_argument('--beta2', type=float, default=0.9, help='Adam beta param (default: 0.999)')
@@ -112,7 +121,8 @@ if __name__ == '__main__':
     parser.add_argument('--perceptual-loss-factor', type=float, default=1., help='Weighting factor for perceptual loss.')
 
     args = parser.parse_args()
-    args.dataset_path = r"C:\Users\dome\datasets\flowers"
+    # args.dataset_path = r"C:\Users\dome\datasets\flowers"
+    args.dataset_path = "jpg"
 
     train_vqgan = TrainVQGAN(args)
 

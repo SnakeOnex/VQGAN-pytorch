@@ -72,6 +72,7 @@ class NonLocalBlock(nn.Module):
         self.k = nn.Conv2d(channels, channels, 1, 1, 0)
         self.v = nn.Conv2d(channels, channels, 1, 1, 0)
         self.proj_out = nn.Conv2d(channels, channels, 1, 1, 0)
+        self.proj_attn = nn.Conv2d(channels, channels, 1, 1, 0)
 
     def forward(self, x):
         h_ = self.gn(x)
@@ -94,16 +95,7 @@ class NonLocalBlock(nn.Module):
         A = torch.bmm(v, attn)
         A = A.reshape(b, c, h, w)
 
+        # Attention projection
+        A = self.proj_attn(A)
+
         return x + A
-
-
-
-
-
-
-
-
-
-
-
-

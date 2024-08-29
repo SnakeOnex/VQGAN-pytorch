@@ -7,16 +7,16 @@ import torch.nn.functional as F
 from torchvision import utils as vutils
 # from lpips import LPIPS
 from lpips_tame import LPIPS
-from vqgan import VQGAN
-from utils import load_data, weights_init
+# from vqgan import VQGAN
+from utils import load_data
 from vqgan_tame import VQModel as VQGAN_tame
 
-
+import wandb
 
 class TrainVQGAN:
     def __init__(self, args):
         self.vqgan = VQGAN_tame(args).to(device=args.device)
-        # self.perceptual_loss = LPIPS(use_dropout=False).eval().to(device=args.device)
+        self.perceptual_loss = LPIPS().eval().to(device=args.device)
 
         # print params count for debugging
         params_count = sum(p.numel() for p in self.vqgan.parameters())
@@ -43,7 +43,7 @@ class TrainVQGAN:
 
     @staticmethod
     def prepare_training():
-        os.makedirs("results_vqvae_l2", exist_ok=True)
+        os.makedirs("results_vqvae", exist_ok=True)
         os.makedirs("checkpoints", exist_ok=True)
 
     def train(self, args):
@@ -54,12 +54,10 @@ class TrainVQGAN:
                 for i, imgs in zip(pbar, train_dataset):
                     imgs = imgs.to(device=args.device)
                     decoded_images, _, q_loss = self.vqgan(imgs)
-                    # decoded_images, _, _ = self.vqgan(imgs)
 
-
-                    # perceptual_loss = self.perceptual_loss(imgs, decoded_images)
+                    perceptual_loss = self.perceptual_loss(imgs, decoded_images)
                     rec_loss = torch.abs(imgs - decoded_images)
-                    perceptual_rec_loss = rec_loss
+                    perceptual_rec_loss = args.perceptual_loss_factor * perceptual_loss + args.rec_loss_factor * rec_loss
                     perceptual_rec_loss = perceptual_rec_loss.mean()
 
                     vq_loss = perceptual_rec_loss + q_loss
@@ -73,12 +71,24 @@ class TrainVQGAN:
                         with torch.no_grad():
                             # real_fake_images = torch.cat((imgs[:4], decoded_images.add(1).mul(0.5)[:4]))
                             real_fake_images = torch.cat((imgs.add(1).mul(0.5)[:4], decoded_images.add(1).mul(0.5)[:4]))
-                            vutils.save_image(real_fake_images, os.path.join("results_vqvae_l2", f"{epoch}_{i}.jpg"), nrow=4)
+                            vutils.save_image(real_fake_images, os.path.join("results_vqvae", f"{epoch}_{i}.jpg"), nrow=4)
+
+                            wandb.log({
+                                "real_fake_images": [wandb.Image(real_fake_images, caption="Real vs Fake images")]
+                            })
 
                     pbar.set_postfix(
                         VQ_Loss=np.round(vq_loss.cpu().detach().numpy().item(), 5),
-                        # GAN_Loss=np.round(gan_loss.cpu().detach().numpy().item(), 3)
+                        rec_loss=np.round(perceptual_rec_loss.cpu().detach().numpy().item(), 5),
+                        q_loss=np.round(q_loss.cpu().detach().numpy().item(), 5),
                     )
+
+                    wandb.log({
+                        "epoch": epoch,
+                        "VQ_Loss": vq_loss.cpu().detach().numpy().item(),
+                        "rec_loss": perceptual_rec_loss.cpu().detach().numpy().item(),
+                        "q_loss": q_loss.cpu().detach().numpy().item(),
+                    })
                     pbar.update(0)
                 torch.save(self.vqgan.state_dict(), os.path.join("checkpoints", f"vqgan_epoch_{epoch}.pt"))
 
@@ -93,7 +103,7 @@ if __name__ == '__main__':
     parser.add_argument('--dataset-path', type=str, default='/data', help='Path to data (default: /data)')
     parser.add_argument('--device', type=str, default="cuda", help='Which device the training is on')
     parser.add_argument('--batch-size', type=int, default=6, help='Input batch size for training (default: 6)')
-    parser.add_argument('--epochs', type=int, default=500, help='Number of epochs to train (default: 50)')
+    parser.add_argument('--epochs', type=int, default=50, help='Number of epochs to train (default: 50)')
     parser.add_argument('--learning-rate', type=float, default=2.25e-05, help='Learning rate (default: 0.0002)')
     parser.add_argument('--beta1', type=float, default=0.5, help='Adam beta param (default: 0.0)')
     parser.add_argument('--beta2', type=float, default=0.9, help='Adam beta param (default: 0.999)')
@@ -105,6 +115,8 @@ if __name__ == '__main__':
     args = parser.parse_args()
     # args.dataset_path = r"C:\Users\dome\datasets\flowers"
     args.dataset_path = "jpg"
+
+    wandb.init(project="vqgan_dome", config=args)
 
     train_vqgan = TrainVQGAN(args)
 
